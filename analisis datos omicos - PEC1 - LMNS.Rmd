@@ -1,0 +1,189 @@
+---
+title: "Análisis Datos Ómicos - PEC1"
+author: "Luis Miguel Nieto Salas"
+date: "13/4/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+
+Preparación de datos:
+```{r}
+> targets <- read.csv2("./data/targets.csv", header = TRUE, sep = ";") 
+> knitr::kable(
++   targets, booktabs = TRUE,
++   caption = 'Content of the targets file used for the current analysis')
+```
+
+Con esto introducimos los datos y generamos una tabla
+
+Ahora instalamos los paquetes necesarios para el análisis:
+```{r}
+> if (!requireNamespace("BiocManager", quietly = TRUE))
++     install.packages("BiocManager")
+> BiocManager::install()
+```
+
+```{r}
+> install.packages("knitr")
+> install.packages("colorspace")
+> install.packages("gplots")
+> install.packages("ggplot2")
+> install.packages("ggrepel")
+> install.packages("htmlTable")
+> install.packages("prettydoc")
+> install.packages("devtools")
+> install.packages("BiocManager")
+> BiocManager::install("oligo")
+> BiocManager::install("pd.mogene.2.1.st")
+> BiocManager::install("arrayQualityMetrics")
+> BiocManager::install("pvca")
+> # NOT NEEDED UNTIL ANALYSES ARE PERFORMED
+> BiocManager::install("limma")
+> BiocManager::install("genefilter")
+> BiocManager::install("mogene21sttranscriptcluster.db")
+> BiocManager::install("annotate")
+> BiocManager::install("org.Mm.eg.db")
+> BiocManager::install("ReactomePA")
+> BiocManager::install("reactome.db")
+```
+
+El siguiente paso es leer los datos en crudo y guardarlos en una variable llamada rawdata. Para eso primero tenemos que cargar el el paquete oligo
+```{r}
+> library(oligo)
+> celFiles <- list.celfiles("./data", full.names = TRUE)
+> library(Biobase)
+> my.targets <-read.AnnotatedDataFrame(file.path("./data","targets.csv"), 
++                                      header = TRUE, row.names = 1, 
++                                      sep=";") 
+> rawData <- read.celfiles(celFiles, phenoData = my.targets)
+```
+
+Hemos vuelto a leer el target file pero ahora suando una función específica: read.AnnotatedDataFrame y lo gyuardamos en una nueva variable llamada my.targets.
+Con esto asociamos la información almacenada en los archivos CEL con el target file en una sola variable llamada ExpressionSet la cual combina diferentes fuentes de información en una sola estructura.
+```{r}
+> my.targets@data$ShortName->rownames(pData(rawData))
+> colnames(rawData) <-rownames(pData(rawData)) 
+> 
+> head(rawData)
+```
+
+Ahora comprobamos si los datos tienen la calidad suficiente para la normalización. Necesitamos el paquete arrayQualityMetrics
+```{r}
+> library(arrayQualityMetrics)
+> arrayQualityMetrics(rawData)
+```
+
+Comprobamos los resultados del análisis de calidad en una crapeta llamada QCDir.Raw. En esta carpeta buscamos el archivo llamado index.html
+Observamos el cuadro que hemos obtenido donde se marca con X. si obtenemos pocos arrays marcados con la X podemos continuar con el análisis.
+
+Podemos obtener otro análisis más exhaustivo con el siguiente código:
+```{r}
+> library(ggplot2)
+> library(ggrepel)
+> plotPCA3 <- function (datos, labels, factor, title, scale,colores, size = 1.5, glineas = 0.25) {
++   data <- prcomp(t(datos),scale=scale)
++   # plot adjustments
++   dataDf <- data.frame(data$x)
++   Group <- factor
++   loads <- round(data$sdev^2/sum(data$sdev^2)*100,1)
++   # main plot
++   p1 <- ggplot(dataDf,aes(x=PC1, y=PC2)) +
++     theme_classic() +
++     geom_hline(yintercept = 0, color = "gray70") +
++     geom_vline(xintercept = 0, color = "gray70") +
++     geom_point(aes(color = Group), alpha = 0.55, size = 3) +
++     coord_cartesian(xlim = c(min(data$x[,1])-5,max(data$x[,1])+5)) +
++     scale_fill_discrete(name = "Group")
++   # avoiding labels superposition
++   p1 + geom_text_repel(aes(y = PC2 + 0.25, label = labels),segment.size = 0.25, size = size) + 
++     labs(x = c(paste("PC1",loads[1],"%")),y=c(paste("PC2",loads[2],"%"))) +  
++     ggtitle(paste("Principal Component Analysis for: ",title,sep=" "))+ 
++     theme(plot.title = element_text(hjust = 0.5)) +
++     scale_color_manual(values=colores)
++   }
+```
+```{r}
+> plotPCA3(exprs(rawData), labels = targets$ShortName, factor = targets$Group, 
++          title="Raw data", scale = FALSE, size = 3, 
++          colores = c("red", "blue", "green", "yellow"))
+```
+
+
+Con este gráfico podemos visualizar los dos componentes principales del raw data.
+En el eje X tenemos PC1 junto con un valor de porcentaje; esto nos indica que el primer componente representa ese porcentaje de la variabilidad de las muestras
+También podemos comporbar la intensidad de la distribución de los arrays usando un boxplot:
+```{r}
+> boxplot(rawData, cex.axis=0.5, las=2,  which="all", 
++          col = c(rep("red", 3), rep("blue", 3), rep("green", 3), rep("yellow", 3)),
++          main="Distribution of raw intensity values")
+```
+
+6. NORMALIZACIÓN
+Este proceso se realiza para que los datos puedan ser comparables entre si y tratar de reducir o eliminar toda la variabilidad entre los datos que no corresponde a razones biológicas.
+El método más común para ello es Robust Multichip Analysis:
+```{r}
+> eset_rma <- rma(rawData)
+```
+
+7. CONTROL DE CALIDAD DE LOS DATOS NORMALIZADOS
+Tras realizar la normalización debemos realizar un test para comprobar como han cambiado los datos. Por ello cambiamos rawdata a eset_rma
+```{r}
+> arrayQualityMetrics(eset_rma, outdir = file.path("./results", "QCDir.Norm"), force=TRUE)
+```
+
+Obtenemos una tabla y ahora el scatterplot:
+```{r}
+> plotPCA3(exprs(eset_rma), labels = targets$ShortName, factor = targets$Group, 
++          title="Normalized data", scale = FALSE, size = 3, 
++          colores = c("red", "blue", "green", "yellow"))
+```
+
+Ahora seguramente veamos que el principal componente ha rebajado el porcentaje de variabilidad.
+
+Ahora realizamos un boxplot para observar la distribucion de las intensidades de normalización a lo largo de las muestras. Si todos los boxplot muestran el mismo aspecto sugiere que la normalización ha funcionado correctamente. 
+```{r}
+> boxplot(eset_rma, cex.axis=0.5, las=2,  which="all", 
++          col = c(rep("red", 3), rep("blue", 3), rep("green", 3), rep("yellow", 3)),
++          main="Boxplot for arrays intensity: Normalized Data")
+```
+
+8. DETECCIÓN DE BATCH
+Los resultados de un análisis de microarrays pueden verse afectados por pequeñas diferencias en variables no biológicas. Este error acumulativo introducido por las variaciones se conoce como "efecto batch".
+La principal técnica para tratar este error es Combat and Principal variation component analysis (PVCA).
+```{r}
+> #load the library
+> library(pvca)
+> pData(eset_rma) <- targets
+> #select the threshold
+> pct_threshold <- 0.6
+> #select the factors to analyze
+> batch.factors <- c("Genotype", "Temperature")
+> #run the analysis
+> pvcaObj <- pvcaBatchAssess (eset_rma, batch.factors, pct_threshold)
+```
+
+
